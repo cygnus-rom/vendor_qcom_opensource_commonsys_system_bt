@@ -24,6 +24,8 @@
 #define LOG_TAG "bt_btif_a2dp_source"
 #define ATRACE_TAG ATRACE_TAG_AUDIO
 
+#include "bt_target.h"
+
 #include <base/logging.h>
 #ifndef OS_GENERIC
 #include <cutils/trace.h>
@@ -33,7 +35,16 @@
 #include <algorithm>
 
 #include "audio_a2dp_hw/include/audio_a2dp_hw.h"
+#if (OFF_TARGET_TEST_ENABLED == FALSE)
 #include "audio_hal_interface/a2dp_encoding.h"
+#endif
+
+#if (OFF_TARGET_TEST_ENABLED == TRUE)
+#include "service/a2dp_hal_sim/audio_a2dp_hal.h"
+#include "service/a2dp_hal_sim/audio_a2dp_hal_stub.h"
+using ::bluetooth::audio::a2dp::SessionType;
+#endif
+
 #include "bt_common.h"
 #include "bta_av_ci.h"
 #include "btif_a2dp.h"
@@ -1595,16 +1606,14 @@ bool btif_a2dp_source_end_session(const RawAddress& peer_address) {
         system_bt_osi::DISCONNECT_REASON_UNKNOWN, 0);
   }
 
-  BTIF_TRACE_DEBUG("%s: tx_flush: %d",__func__, btif_a2dp_source_cb.tx_flush);
-  /* ensure tx frames are immediately flushed */
-  if (btif_a2dp_source_cb.tx_flush == false)
-    btif_a2dp_source_cb.tx_flush = true;
-
   /* request to stop media task */
   if (!btif_a2dp_source_is_hal_v2_enabled() ||
        (btif_a2dp_source_is_hal_v2_enabled() &&
        bluetooth::audio::a2dp::get_session_type() ==
        SessionType::A2DP_SOFTWARE_ENCODING_DATAPATH)) {
+    if (btif_a2dp_source_cb.tx_flush == false)
+      btif_a2dp_source_cb.tx_flush = true;
+
     btif_a2dp_source_audio_tx_flush_req();
     BTIF_TRACE_DEBUG("%s: stop audio as it is SW session",__func__);
     btif_a2dp_source_stop_audio_req();
