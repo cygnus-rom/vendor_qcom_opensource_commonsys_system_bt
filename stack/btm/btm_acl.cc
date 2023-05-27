@@ -58,6 +58,7 @@
 #include "controller.h"
 #include <btcommon_interface_defs.h>
 #include "btif/include/btif_config.h"
+#include "stack/gatt/gatt_int.h"
 
 static void btm_read_remote_features(uint16_t handle);
 static void btm_read_remote_ext_features(uint16_t handle, uint8_t page_number);
@@ -1050,6 +1051,20 @@ void btm_read_remote_version_complete(uint8_t* p) {
       if (p_acl_cb->transport == BT_TRANSPORT_LE) {
         l2cble_notify_le_connection(p_acl_cb->remote_addr);
         btm_use_preferred_conn_params(p_acl_cb->remote_addr);
+        if ((p_acl_cb->lmp_version >= HCI_PROTO_VERSION_5_1)
+            && gatt_is_robust_caching_enabled()) {
+          bool skip_caching_enable = false;
+          BD_NAME bd_name;
+          if (BTM_GetRemoteDeviceName(p_acl_cb->remote_addr, bd_name)) {
+            if (interop_database_match_name(INTEROP_SKIP_ROBUST_CACHING_READ, (char*) bd_name)) {
+              skip_caching_enable = true;
+            }
+          }
+          VLOG(1) << __func__ << " skip_caching_enable:" << +skip_caching_enable;
+          if (!skip_caching_enable) {
+            GATT_EnableRobustCaching(p_acl_cb->remote_addr, BT_TRANSPORT_LE);
+          }
+        }
       }
         VLOG(2) << __func__ << " btm_read_remote_version_complete: BDA: " << p_acl_cb->remote_addr;
         BTM_TRACE_WARNING ("btm_read_remote_version_complete lmp_version %d manufacturer %d lmp_subversion %d",
@@ -2520,7 +2535,7 @@ void btm_read_tx_power_timeout(UNUSED_ATTR void* data) {
  * Returns          void
  *
  ******************************************************************************/
-void btm_read_tx_power_complete(uint8_t* p, bool is_ble) {
+void btm_read_tx_power_complete(uint8_t* p, uint16_t evt_len, bool is_ble) {
   tBTM_CMPL_CB* p_cb = btm_cb.devcb.p_tx_power_cmpl_cb;
   tBTM_TX_POWER_RESULT result;
   tACL_CONN* p_acl_cb = &btm_cb.acl_db[0];
@@ -2531,6 +2546,10 @@ void btm_read_tx_power_complete(uint8_t* p, bool is_ble) {
 
   /* If there was a registered callback, call it */
   if (p_cb) {
+    if (evt_len < 1) {
+      goto err_out;
+    }
+
     STREAM_TO_UINT8(result.hci_status, p);
 
     if (result.hci_status == HCI_SUCCESS) {
@@ -2538,6 +2557,11 @@ void btm_read_tx_power_complete(uint8_t* p, bool is_ble) {
 
       if (!is_ble) {
         uint16_t handle;
+
+        if (evt_len < 4) {
+          goto err_out;
+        }
+
         STREAM_TO_UINT16(handle, p);
         STREAM_TO_UINT8(result.tx_power, p);
 
@@ -2549,6 +2573,10 @@ void btm_read_tx_power_complete(uint8_t* p, bool is_ble) {
           }
         }
       } else {
+        if (evt_len < 2) {
+          goto err_out;
+        }
+
         STREAM_TO_UINT8(result.tx_power, p);
         result.rem_bda = btm_cb.devcb.read_tx_pwr_addr;
       }
@@ -2560,6 +2588,11 @@ void btm_read_tx_power_complete(uint8_t* p, bool is_ble) {
 
     (*p_cb)(&result);
   }
+
+  return;
+
+ err_out:
+  BTM_TRACE_ERROR(" %s Bogus event packet, too short", __func__);
 }
 
 /*******************************************************************************
@@ -2589,7 +2622,7 @@ void btm_read_rssi_timeout(UNUSED_ATTR void* data) {
  * Returns          void
  *
  ******************************************************************************/
-void btm_read_rssi_complete(uint8_t* p) {
+void btm_read_rssi_complete(uint8_t* p, uint16_t evt_len) {
   tBTM_CMPL_CB* p_cb = btm_cb.devcb.p_rssi_cmpl_cb;
   tBTM_RSSI_RESULT result;
   tACL_CONN* p_acl_cb = &btm_cb.acl_db[0];
@@ -2600,10 +2633,19 @@ void btm_read_rssi_complete(uint8_t* p) {
 
   /* If there was a registered callback, call it */
   if (p_cb) {
+    if (evt_len < 1) {
+      goto err_out;
+    }
+
     STREAM_TO_UINT8(result.hci_status, p);
 
     if (result.hci_status == HCI_SUCCESS) {
       uint16_t handle;
+
+      if (evt_len < 4) {
+        goto err_out;
+      }
+
       result.status = BTM_SUCCESS;
 
       STREAM_TO_UINT16(handle, p);
@@ -2625,6 +2667,11 @@ void btm_read_rssi_complete(uint8_t* p) {
 
     (*p_cb)(&result);
   }
+
+  return;
+
+err_out:
+  BTM_TRACE_ERROR("Bogus event packet, too short");
 }
 
 /*******************************************************************************
@@ -2786,7 +2833,7 @@ void btm_read_link_quality_timeout(UNUSED_ATTR void* data) {
  * Returns          void
  *
  ******************************************************************************/
-void btm_read_link_quality_complete(uint8_t* p) {
+void btm_read_link_quality_complete(uint8_t* p, uint16_t evt_len) {
   tBTM_CMPL_CB* p_cb = btm_cb.devcb.p_link_qual_cmpl_cb;
   tBTM_LINK_QUALITY_RESULT result;
   tACL_CONN* p_acl_cb = &btm_cb.acl_db[0];
@@ -2797,11 +2844,19 @@ void btm_read_link_quality_complete(uint8_t* p) {
 
   /* If there was a registered callback, call it */
   if (p_cb) {
+    if (evt_len < 1) {
+      goto err_out;
+    }
+
     STREAM_TO_UINT8(result.hci_status, p);
 
     if (result.hci_status == HCI_SUCCESS) {
       uint16_t handle;
       result.status = BTM_SUCCESS;
+
+      if (evt_len < 4) {
+        goto err_out;
+      }
 
       STREAM_TO_UINT16(handle, p);
 
@@ -2823,6 +2878,11 @@ void btm_read_link_quality_complete(uint8_t* p) {
 
     (*p_cb)(&result);
   }
+
+  return;
+
+err_out:
+  BTM_TRACE_ERROR("Bogus Link Quality event packet, size: %d", evt_len);
 }
 
 /*******************************************************************************

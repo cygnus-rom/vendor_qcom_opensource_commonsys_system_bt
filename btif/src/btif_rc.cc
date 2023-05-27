@@ -3121,6 +3121,11 @@ static bt_status_t register_notification_rsp(
                    dump_rc_notification_event_id(event_id));
   std::unique_lock<std::mutex> lock(btif_rc_cb.lock);
 
+  if (event_id > MAX_RC_NOTIFICATIONS) {
+    BTIF_TRACE_ERROR("Invalid event id");
+    return BT_STATUS_PARM_INVALID;
+  }
+
   memset(&(avrc_rsp.reg_notif), 0, sizeof(tAVRC_REG_NOTIF_RSP));
 
   avrc_rsp.reg_notif.event_id = event_id;
@@ -5144,6 +5149,12 @@ static void handle_app_attr_val_txt_response(
     }
   }
   p_app_settings->ext_val_index++;
+
+   if (p_app_settings->ext_val_index >= AVRC_MAX_APP_ATTR_SIZE) {
+     BTIF_TRACE_ERROR("%s: ext_val_index is 0x%02x, overflow!",
+                      __func__, p_app_settings->ext_val_index);
+     return;
+   }
 
   if (p_app_settings->ext_val_index < p_app_settings->num_ext_attrs) {
     attr_index = p_app_settings->ext_val_index;

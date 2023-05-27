@@ -164,6 +164,8 @@ using SyncReportCb =
        uint8_t /*status*/, std::vector<uint8_t> /*data*/)>;
 using SyncLostCb = base::Callback<void(uint16_t /*sync_handle*/)>;
 using SyncTransferCb = base::Callback<void(uint8_t /*status*/, RawAddress)>;
+using BigInfoReportCb = base::Callback<void(uint16_t /*sync_handle*/, bool /*encrypted*/)>;
+
 #define MAX_SYNC_TRANSACTION 16
 #define SYNC_TIMEOUT (30 * 1000)
 #define ADV_SYNC_ESTB_EVT_LEN 16
@@ -185,6 +187,7 @@ typedef struct {
   StartSyncCb sync_start_cb;
   SyncReportCb sync_report_cb;
   SyncLostCb sync_lost_cb;
+  BigInfoReportCb biginfo_report_cb;
 } tBTM_BLE_PERIODIC_SYNC;
 
 typedef struct {
@@ -1008,6 +1011,10 @@ void btm_ble_start_sync_request(uint8_t sid, RawAddress addr, uint16_t skip, uin
   uint8_t options = 0;
   uint8_t cte_type = 7;
   int index = btm_ble_get_psync_index(sid, addr);
+  if (index == MAX_SYNC_TRANSACTION) {
+      BTM_TRACE_ERROR("[PSync]%s: index not found", __func__);
+      return;
+  }
   tBTM_BLE_PERIODIC_SYNC *p = &btm_ble_pa_sync_cb.p_sync[index];
   p->sync_state = PERIODIC_SYNC_PENDING;
   btsnd_hcic_ble_create_periodic_sync(options, sid, address_type, addr, skip, timeout,cte_type);
@@ -1073,6 +1080,10 @@ static void btm_ble_start_sync_timeout(void *data) {
   RawAddress address = p_head->address;
 
   int index = btm_ble_get_psync_index(adv_sid, address);
+  if (index == MAX_SYNC_TRANSACTION) {
+      BTM_TRACE_ERROR("[PSync]%s: index not found", __func__);
+      return;
+  }
 
   tBTM_BLE_PERIODIC_SYNC *p = &btm_ble_pa_sync_cb.p_sync[index];
 
@@ -1250,11 +1261,19 @@ void btm_ble_periodic_adv_sync_lost(uint8_t *param, uint16_t param_len) {
   uint16_t sync_handle;
   if (param_len != SYNC_LOST_EVT_LEN) {
     BTM_TRACE_ERROR("[PSync]%s: Invalid event length",__func__);
+    return;
   }
   STREAM_TO_UINT16(sync_handle, param);
+  BTM_TRACE_DEBUG("[PSync]%s: sync_handle = %d", __func__, sync_handle);
   int index = btm_ble_get_psync_index_from_handle(sync_handle);
+  if (index == MAX_SYNC_TRANSACTION) {
+      BTM_TRACE_ERROR("[PSync]%s: index not found", __func__);
+      return;
+  }
   tBTM_BLE_PERIODIC_SYNC *ps = &btm_ble_pa_sync_cb.p_sync[index];
-  ps->sync_lost_cb.Run(sync_handle);
+  if (ps->sync_lost_cb) {
+      ps->sync_lost_cb.Run(sync_handle);
+  }
 
   ps->in_use = false;
   ps->sid = 0;
@@ -1272,7 +1291,8 @@ void btm_ble_periodic_adv_sync_lost(uint8_t *param, uint16_t param_len) {
  ******************************************************************************/
 
 void BTM_BleStartPeriodicSync(uint8_t adv_sid, RawAddress address, uint16_t skip,
-             uint16_t timeout, StartSyncCb syncCb, SyncReportCb reportCb, SyncLostCb lostCb) {
+             uint16_t timeout, StartSyncCb syncCb, SyncReportCb reportCb, SyncLostCb lostCb,
+             BigInfoReportCb biginfo_reportCb) {
   BTM_TRACE_DEBUG("[PSync]%s",__func__);
   int index = btm_ble_get_free_psync_index();
   tBTM_BLE_PERIODIC_SYNC *p = &btm_ble_pa_sync_cb.p_sync[index];
@@ -1286,6 +1306,7 @@ void BTM_BleStartPeriodicSync(uint8_t adv_sid, RawAddress address, uint16_t skip
   p->sync_start_cb = syncCb;
   p->sync_report_cb = reportCb;
   p->sync_lost_cb = lostCb;
+  p->biginfo_report_cb = biginfo_reportCb;
   btm_queue_start_sync_req(adv_sid, address, skip, timeout);
 }
 
@@ -1410,6 +1431,11 @@ void BTM_BlePeriodicSyncTransfer(RawAddress addr, uint16_t service_data,
   }
 
   int index = btm_ble_get_free_sync_transfer_index();
+  if (index == MAX_SYNC_TRANSACTION) {
+      BTM_TRACE_ERROR("[PSync]%s: index is unavailable", __func__);
+      cb.Run(BTM_NO_RESOURCES, addr);
+      return;
+  }
   tBTM_BLE_PERIODIC_SYNC_TRANSFER *p_sync_transfer = &btm_ble_pa_sync_cb.sync_transfer[index];
   p_sync_transfer->in_use = true;
   p_sync_transfer->conn_handle = conn_handle;
@@ -1444,6 +1470,11 @@ void BTM_BlePeriodicSyncSetInfo(RawAddress addr, uint16_t service_data,
   }
 
   int index = btm_ble_get_free_sync_transfer_index();
+  if (index == MAX_SYNC_TRANSACTION) {
+      BTM_TRACE_ERROR("[PSync]%s: index is unavailable", __func__);
+      cb.Run(BTM_NO_RESOURCES, addr);
+      return;
+  }
   tBTM_BLE_PERIODIC_SYNC_TRANSFER *p_sync_transfer = &btm_ble_pa_sync_cb.sync_transfer[index];
   p_sync_transfer->in_use = true;
   p_sync_transfer->conn_handle = conn_handle;
@@ -1484,6 +1515,14 @@ void btm_ble_biginfo_adv_report_rcvd(uint8_t *p, uint16_t param_len) {
                     "sdu_interval = %d, max_sdu = %d, phy = %d, framing = %d, encryption  = %d",
                     __func__, sync_handle, num_bises, nse, iso_interval,
                     bn, pto, irc, max_pdu, sdu_interval, max_sdu, phy, framing, encryption);
+  int index = btm_ble_get_psync_index_from_handle(sync_handle);
+  if (index == MAX_SYNC_TRANSACTION) {
+    BTM_TRACE_ERROR("[PSync]%s: index not found", __func__);
+    return;
+  }
+  tBTM_BLE_PERIODIC_SYNC *ps = &btm_ble_pa_sync_cb.p_sync[index];
+  BTM_TRACE_DEBUG("[PSync]%s: invoking callback", __func__);
+  ps->biginfo_report_cb.Run(sync_handle, encryption ? true: false);
 }
 
 /*******************************************************************************
@@ -3327,11 +3366,16 @@ void btm_ble_refresh_raddr_timer_timeout(UNUSED_ATTR void* data) {
  * Returns          void
  *
  ******************************************************************************/
-void btm_ble_read_remote_features_complete(uint8_t* p) {
+void btm_ble_read_remote_features_complete(uint8_t* p, uint8_t length) {
   BTM_TRACE_EVENT("%s", __func__);
-
   uint16_t handle;
   uint8_t status;
+  int idx;
+
+  if (length < 3) {
+    goto err_out;
+  }
+
   STREAM_TO_UINT8(status, p);
   STREAM_TO_UINT16(handle, p);
   handle = handle & 0x0FFF;  // only 12 bits meaningful
@@ -3342,13 +3386,19 @@ void btm_ble_read_remote_features_complete(uint8_t* p) {
     if (status != HCI_ERR_UNSUPPORTED_REM_FEATURE) return;
   }
 
-  int idx = btm_handle_to_acl_index(handle);
+  idx = btm_handle_to_acl_index(handle);
   if (idx == MAX_L2CAP_LINKS) {
     BTM_TRACE_ERROR("%s: can't find acl for handle: 0x%04x", __func__, handle);
     return;
   }
 
   if (status == HCI_SUCCESS) {
+    // BD_FEATURES_LEN additional bytes are read
+    // in acl_set_peer_le_features_from_handle
+    if (length < 3 + BD_FEATURES_LEN) {
+      goto err_out;
+    }
+
     STREAM_TO_ARRAY(btm_cb.acl_db[idx].peer_le_features, p, BD_FEATURES_LEN);
 #if (BT_IOT_LOGGING_ENABLED == TRUE)
     /* save LE remote supported features to iot conf file */
@@ -3362,6 +3412,10 @@ void btm_ble_read_remote_features_complete(uint8_t* p) {
   }
 
   btsnd_hcic_rmt_ver_req(handle);
+  return;
+
+err_out:
+  BTM_TRACE_ERROR("%s: bogus event packet, too short", __func__);
 }
 
 /*******************************************************************************
@@ -3373,11 +3427,11 @@ void btm_ble_read_remote_features_complete(uint8_t* p) {
  * Returns          void
  *
  ******************************************************************************/
-void btm_ble_write_adv_enable_complete(uint8_t* p) {
+void btm_ble_write_adv_enable_complete(uint8_t* p, uint16_t evt_len) {
   tBTM_BLE_INQ_CB* p_cb = &btm_cb.ble_ctr_cb.inq_var;
 
   /* if write adv enable/disbale not succeed */
-  if (*p != HCI_SUCCESS) {
+  if (evt_len < 1 || *p != HCI_SUCCESS) {
     /* toggle back the adv mode */
     p_cb->adv_mode = !p_cb->adv_mode;
   }
